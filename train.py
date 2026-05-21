@@ -20,7 +20,9 @@ import sys
 import time
 import random
 import logging
+import argparse
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -57,6 +59,10 @@ def get_logger(log_dir: str, name: str = "train") -> logging.Logger:
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
+    
+    if logger.handlers:
+        return logger
+
     fmt = logging.Formatter("%(asctime)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
     # Console handler
@@ -167,6 +173,11 @@ def train_one_epoch(
             loss, loss_dict = criterion(logits, masks)
             loss = loss / grad_accumulation_steps   # scale for accumulation
 
+        # NaN/Inf Loss Protection
+        if not torch.isfinite(loss):
+            logger.error(f"Non-finite loss detected at step {step+1}")
+            raise RuntimeError(f"NaN/Inf loss detected at step {step+1}: loss = {loss.item()}")
+
         scaler.scale(loss).backward()
 
         if (step + 1) % grad_accumulation_steps == 0 or (step + 1) == n_batches:
@@ -183,12 +194,17 @@ def train_one_epoch(
         # Print progress every 50 steps
         if (step + 1) % 50 == 0:
             elapsed = time.time() - start
+            mem_info = ""
+            if torch.cuda.is_available():
+                mem = torch.cuda.memory_allocated() / 1024**3
+                mem_info = f"  mem={mem:.2f}GB"
             logger.info(
                 f"  Epoch {epoch:03d}  step {step+1:04d}/{n_batches}  "
                 f"loss={loss_dict['total']:.4f}  "
                 f"dice={loss_dict['dice']:.4f}  "
                 f"focal={loss_dict['focal']:.4f}  "
                 f"time={elapsed:.1f}s"
+                f"{mem_info}"
             )
 
     n = max(n_batches, 1)
@@ -235,12 +251,11 @@ def validate(
 #  Main training loop
 # ─────────────────────────────────────────────────────────────────────────────
 
-def train(cfg: Config) -> None:
+def train(cfg: Config, resume_path: Optional[str] = None) -> None:
     set_seed(cfg.seed)
     logger = get_logger(cfg.log_dir)
     writer = SummaryWriter(log_dir=cfg.log_dir)
     device = torch.device(cfg.device)
-    
     
     logger.info("=" * 60)
     logger.info("  Wound Segmentation Training — UNet + EfficientNet-B4")
@@ -252,6 +267,8 @@ def train(cfg: Config) -> None:
     logger.info(f"  LR              : {cfg.learning_rate}")
     logger.info(f"  Dice weight     : {cfg.dice_weight}")
     logger.info(f"  Focal weight    : {cfg.focal_weight}")
+    if resume_path:
+        logger.info(f"  Resume Path     : {resume_path}")
     logger.info("=" * 60)
 
     # ── Datasets ──────────────────────────────────────────────────────────
@@ -304,48 +321,154 @@ def train(cfg: Config) -> None:
         dice_smooth  = cfg.dice_smooth,
     )
 
-    # ── Optimizer ─────────────────────────────────────────────────────────
-    optimizer = optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=cfg.learning_rate,
-        weight_decay=cfg.weight_decay,
-    )
+    # Variables to track training progress / state
+    start_epoch = 1
+    best_dice = 0.0
+    encoder_unfrozen = False
+    UNFREEZE_EPOCH = 10
 
-    # ── Scheduler ─────────────────────────────────────────────────────────
-    scheduler = WarmupCosineScheduler(
-        optimizer,
-        warmup_epochs = cfg.warmup_epochs,
-        T_max         = cfg.scheduler_t_max,
-        eta_min       = cfg.scheduler_eta_min,
-    )
+    # ── Initialization (scratch vs resume) ────────────────────────────────
+    if resume_path and os.path.exists(resume_path):
+        logger.info(f"[Resume] Loading checkpoint from {resume_path}")
+        try:
+            checkpoint = torch.load(resume_path, map_location=device)
+        except Exception as e:
+            checkpoint = torch.load(resume_path, map_location=device, weights_only=False)
 
-    # ── AMP scaler ────────────────────────────────────────────────────────
-    scaler = GradScaler(enabled=cfg.use_amp and device.type == "cuda")
+        if isinstance(checkpoint, dict) and "model" in checkpoint:
+            # Full training checkpoint
+            model.load_state_dict(checkpoint["model"])
+            start_epoch = checkpoint["epoch"] + 1
+            best_dice = checkpoint.get("best_dice", 0.0)
+            logger.info(f"[Resume] Loaded full training checkpoint. Resuming from epoch {start_epoch} (best validation Dice so far: {best_dice:.4f})")
+            
+            # Explicitly load encoder unfreeze state with fallback
+            if "encoder_unfrozen" in checkpoint:
+                encoder_unfrozen = checkpoint["encoder_unfrozen"]
+                logger.info(f"[Resume] Loaded explicit encoder_unfrozen state: {encoder_unfrozen}")
+            else:
+                encoder_unfrozen = start_epoch > UNFREEZE_EPOCH + 1
+                logger.info(f"[Resume] Inferred encoder_unfrozen state: {encoder_unfrozen}")
+
+            if encoder_unfrozen:
+                # Re-create optimizer with Phase 2 param groups
+                unfreeze_encoder(model)
+                head_params = list(model.segmentation_head.parameters()) if hasattr(model, "segmentation_head") else []
+                optimizer = optim.AdamW([
+                    {"params": model.encoder.parameters(), "lr": cfg.learning_rate * 0.1},
+                    {"params": model.decoder.parameters(), "lr": cfg.learning_rate},
+                    {"params": head_params, "lr": cfg.learning_rate},
+                ], weight_decay=cfg.weight_decay)
+                scheduler = WarmupCosineScheduler(
+                    optimizer,
+                    warmup_epochs = 0,
+                    T_max         = cfg.scheduler_t_max,
+                    eta_min       = cfg.scheduler_eta_min,
+                )
+                scaler = GradScaler(enabled=cfg.use_amp and device.type == "cuda")
+                logger.info("[Resume] Encoder is unfrozen (Phase 2)")
+            else:
+                # Re-create optimizer with Phase 1 param groups
+                freeze_encoder(model)
+                optimizer = optim.AdamW(
+                    filter(lambda p: p.requires_grad, model.parameters()),
+                    lr=cfg.learning_rate,
+                    weight_decay=cfg.weight_decay,
+                )
+                scheduler = WarmupCosineScheduler(
+                    optimizer,
+                    warmup_epochs = cfg.warmup_epochs,
+                    T_max         = cfg.scheduler_t_max,
+                    eta_min       = cfg.scheduler_eta_min,
+                )
+                scaler = GradScaler(enabled=cfg.use_amp and device.type == "cuda")
+                logger.info("[Resume] Encoder is frozen (Phase 1)")
+
+            # Load states
+            if "optimizer" in checkpoint:
+                optimizer.load_state_dict(checkpoint["optimizer"])
+                logger.info("[Resume] Loaded optimizer state")
+            if "scheduler" in checkpoint:
+                scheduler.load_state_dict(checkpoint["scheduler"])
+                logger.info("[Resume] Loaded scheduler state")
+            if "scaler" in checkpoint:
+                scaler.load_state_dict(checkpoint["scaler"])
+                logger.info("[Resume] Loaded AMP scaler state")
+
+            # Restore RNG states
+            if "torch_rng_state" in checkpoint:
+                torch.set_rng_state(checkpoint["torch_rng_state"].cpu() if isinstance(checkpoint["torch_rng_state"], torch.Tensor) else checkpoint["torch_rng_state"])
+                logger.info("[Resume] Restored PyTorch RNG state")
+            if "cuda_rng_state" in checkpoint and torch.cuda.is_available():
+                try:
+                    torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state"])
+                    logger.info("[Resume] Restored CUDA RNG state")
+                except Exception as e:
+                    logger.warning(f"[Resume] Failed to restore CUDA RNG state: {e}")
+            if "numpy_rng_state" in checkpoint:
+                np.random.set_state(checkpoint["numpy_rng_state"])
+                logger.info("[Resume] Restored NumPy RNG state")
+            if "python_rng_state" in checkpoint:
+                random.setstate(checkpoint["python_rng_state"])
+                logger.info("[Resume] Restored Python RNG state")
+        else:
+            # Weights-only state dict (e.g. best_model.pth weight-only file)
+            state_dict = checkpoint["model"] if (isinstance(checkpoint, dict) and "model" in checkpoint) else checkpoint
+            model.load_state_dict(state_dict)
+            logger.info("[Resume] Loaded weights-only state dict. Starting training from epoch 1 (Phase 1).")
+            
+            freeze_encoder(model)
+            optimizer = optim.AdamW(
+                filter(lambda p: p.requires_grad, model.parameters()),
+                lr=cfg.learning_rate,
+                weight_decay=cfg.weight_decay,
+            )
+            scheduler = WarmupCosineScheduler(
+                optimizer,
+                warmup_epochs = cfg.warmup_epochs,
+                T_max         = cfg.scheduler_t_max,
+                eta_min       = cfg.scheduler_eta_min,
+            )
+            scaler = GradScaler(enabled=cfg.use_amp and device.type == "cuda")
+            encoder_unfrozen = False
+    else:
+        if resume_path:
+            logger.warning(f"[Resume] Warning: Checkpoint path '{resume_path}' does not exist. Starting training from scratch.")
+        # Setup from scratch (Phase 1)
+        freeze_encoder(model)
+        optimizer = optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=cfg.learning_rate,
+            weight_decay=cfg.weight_decay,
+        )
+        scheduler = WarmupCosineScheduler(
+            optimizer,
+            warmup_epochs = cfg.warmup_epochs,
+            T_max         = cfg.scheduler_t_max,
+            eta_min       = cfg.scheduler_eta_min,
+        )
+        scaler = GradScaler(enabled=cfg.use_amp and device.type == "cuda")
+        encoder_unfrozen = False
 
     # ── Early stopping ────────────────────────────────────────────────────
     early_stop = EarlyStopping(patience=cfg.early_stopping_patience, mode="max")
+    if best_dice > 0.0:
+        early_stop.best = best_dice
 
-    # ── Two-phase training ────────────────────────────────────────────────
-    # Phase 1 (epochs 1–10): freeze encoder, train decoder only
-    # Phase 2 (epoch 11+):   unfreeze everything
-    freeze_encoder(model)
-    UNFREEZE_EPOCH = 10
-    encoder_unfrozen = False
-
-    best_dice = 0.0
-    history   = []
+    history = []
 
     # ─────────────────────────────────────────────────────────────────────
-    for epoch in range(1, cfg.num_epochs + 1):
+    for epoch in range(start_epoch, cfg.num_epochs + 1):
 
         # Unfreeze at epoch UNFREEZE_EPOCH
         if epoch == UNFREEZE_EPOCH + 1 and not encoder_unfrozen:
             unfreeze_encoder(model)
             # Re-create optimizer with all params and lower LR for encoder
+            head_params = list(model.segmentation_head.parameters()) if hasattr(model, "segmentation_head") else []
             optimizer = optim.AdamW([
                 {"params": model.encoder.parameters(), "lr": cfg.learning_rate * 0.1},
                 {"params": model.decoder.parameters(), "lr": cfg.learning_rate},
-                {"params": model.segmentation_head.parameters(), "lr": cfg.learning_rate},
+                {"params": head_params, "lr": cfg.learning_rate},
             ], weight_decay=cfg.weight_decay)
             scheduler = WarmupCosineScheduler(
                 optimizer,
@@ -381,6 +504,10 @@ def train(cfg: Config) -> None:
         writer.add_scalar("LR",              current_lr,            epoch)
 
         # Console summary
+        mem_info = ""
+        if torch.cuda.is_available():
+            mem = torch.cuda.memory_allocated() / 1024**3
+            mem_info = f"  gpu_mem={mem:.2f}GB"
         logger.info(
             f"Epoch {epoch:03d}/{cfg.num_epochs}  "
             f"train_loss={train_metrics['loss']:.4f}  "
@@ -390,6 +517,7 @@ def train(cfg: Config) -> None:
             f"prec={val_metrics['precision']:.4f}  "
             f"rec={val_metrics['recall']:.4f}  "
             f"lr={current_lr:.2e}"
+            f"{mem_info}"
         )
 
         history.append({"epoch": epoch, **train_metrics, **{f"val_{k}": v for k, v in val_metrics.items()}})
@@ -399,15 +527,29 @@ def train(cfg: Config) -> None:
         if val_dice > best_dice:
             best_dice = val_dice
             save_checkpoint(
-                model, optimizer, epoch, val_metrics,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=scaler,
+                epoch=epoch,
+                metrics=val_metrics,
+                best_dice=best_dice,
                 path=str(Path(cfg.checkpoint_dir) / "best_model.pth"),
+                encoder_unfrozen=encoder_unfrozen,
             )
             logger.info(f"  ★ New best Dice: {best_dice:.4f}")
 
         # Save latest checkpoint
         save_checkpoint(
-            model, optimizer, epoch, val_metrics,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            scaler=scaler,
+            epoch=epoch,
+            metrics=val_metrics,
+            best_dice=best_dice,
             path=str(Path(cfg.checkpoint_dir) / "last_model.pth"),
+            encoder_unfrozen=encoder_unfrozen,
         )
 
         # Early stopping
@@ -416,6 +558,17 @@ def train(cfg: Config) -> None:
             break
 
     writer.close()
+
+    # Save training history to JSON
+    import json
+    history_path = Path(cfg.log_dir) / "history.json"
+    try:
+        with open(history_path, "w") as f:
+            json.dump(history, f, indent=2)
+        logger.info(f"Training history saved to {history_path}")
+    except Exception as e:
+        logger.error(f"Failed to save training history to JSON: {e}")
+
     logger.info(f"\nTraining complete.  Best val Dice = {best_dice:.4f}")
     logger.info(f"Best model saved → {cfg.checkpoint_dir}/best_model.pth")
     return history
@@ -426,5 +579,16 @@ def train(cfg: Config) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train Wound Segmentation Model")
+    parser.add_argument(
+        "--resume",
+        nargs="?",
+        const="checkpoints/last_model.pth",
+        type=str,
+        default=None,
+        help="Path to checkpoint .pth file to resume training from. If flag is provided without path, defaults to checkpoints/last_model.pth"
+    )
+    args = parser.parse_args()
+
     cfg = Config()
-    train(cfg)
+    train(cfg, resume_path=args.resume)

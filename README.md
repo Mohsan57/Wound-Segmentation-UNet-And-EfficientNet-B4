@@ -82,8 +82,35 @@ Edit `config.py` — key settings:
 ### 2. Run training
 
 ```bash
+# Start training from scratch
 python train.py
 ```
+
+### 3. Resuming Training
+
+You can resume training from a previously saved checkpoint or state dictionary. This is highly useful if training was interrupted or if you want to initialize training from a specific set of pre-trained weights.
+
+We support three ways to use the `--resume` argument:
+
+1. **Auto-resume from the last checkpoint**:
+   Resumes training from the default `checkpoints/last_model.pth` file if it exists, restoring the optimizer state, learning rate scheduler state, AMP loss scaler, and starting from the next epoch:
+   ```bash
+   python train.py --resume
+   ```
+
+2. **Resume from a specific full checkpoint**:
+   Resumes training from a specific path to a full checkpoint, restoring the exact training state (epoch, optimizer, scheduler, scaler):
+   ```bash
+   python train.py --resume checkpoints/best_model.pth
+   ```
+
+3. **Initialize from a weights-only model**:
+   If the provided `.pth` file is a weights-only state dictionary (such as `best_model.pth` files exported for inference that do not contain optimizer metadata), the script will load the weights and start training from Epoch 1 (Phase 1, encoder frozen):
+   ```bash
+   python train.py --resume best_model.pth
+   ```
+
+---
 
 Training runs in **two phases** automatically:
 - **Phase 1** (epochs 1–10): Encoder frozen, only decoder is trained.

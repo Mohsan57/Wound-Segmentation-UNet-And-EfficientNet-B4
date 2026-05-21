@@ -11,6 +11,9 @@ Supports:
 Default: UNet + EfficientNet-B4 pretrained on ImageNet.
 """
 
+import os
+import random
+import numpy as np
 import torch
 import torch.nn as nn
 from typing import Optional
@@ -126,8 +129,9 @@ def save_checkpoint(
     metrics,
     best_dice,
     path,
+    encoder_unfrozen: bool = False,
 ):
-    torch.save({
+    checkpoint_dict = {
         "epoch": epoch,
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
@@ -135,7 +139,17 @@ def save_checkpoint(
         "scaler": scaler.state_dict(),
         "metrics": metrics,
         "best_dice": best_dice,
-    }, path)
+        "encoder_unfrozen": encoder_unfrozen,
+        "torch_rng_state": torch.get_rng_state(),
+        "numpy_rng_state": np.random.get_state(),
+        "python_rng_state": random.getstate(),
+    }
+    if torch.cuda.is_available():
+        checkpoint_dict["cuda_rng_state"] = torch.cuda.get_rng_state_all()
+
+    tmp_path = f"{path}.tmp"
+    torch.save(checkpoint_dict, tmp_path)
+    os.replace(tmp_path, path)
 
 
 def load_checkpoint(
