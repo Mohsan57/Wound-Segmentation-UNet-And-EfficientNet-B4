@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────
+#  Wound Segmentation — Python dependencies
+#  Install:  pip install -r requirements.txt
+# ─────────────────────────────────────────────────
+
+# Core deep learning
+torch>=2.1.0
+torchvision>=0.16.0
+
+# Segmentation model backbone
+segmentation-models-pytorch>=0.3.3
+
+# Image augmentation
+albumentations>=1.4.0
+
+# Computer vision
+opencv-python>=4.8.0
+
+# Scientific computing
+numpy>=1.24.0
+scipy>=1.11.0           # Hausdorff distance
+
+# Logging & visualisation
+tensorboard>=2.14.0
+matplotlib>=3.7.0
+
+# ONNX export
+onnx>=1.15.0
+onnxruntime>=1.16.0     # CPU inference test
+
+# Optional: mobile export
+# onnx2tf                 # ONNX → TFLite (Android)
+# coremltools             # ONNX → CoreML (iOS)
+# tensorflow>=2.13.0      # Required by onnx2tf
+
+# Utilities
+tqdm>=4.65.0
+Pillow>=10.0.0

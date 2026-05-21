@@ -1,0 +1,11 @@
+wound_dataset/
+venv/
+.venv/
+__pycache__/
+checkpoints/
+eval_results/
+logs/
+exports/
+*.pth
+*.rar
+*.zip
