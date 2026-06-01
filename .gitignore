@@ -9,3 +9,5 @@ exports/
 *.pth
 *.rar
 *.zip
+input/
+outputs/
