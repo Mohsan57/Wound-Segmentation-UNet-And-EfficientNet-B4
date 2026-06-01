@@ -314,11 +314,14 @@ def train(cfg: Config, resume_path: Optional[str] = None) -> None:
 
     # ── Loss ──────────────────────────────────────────────────────────────
     criterion = HybridLoss(
-        dice_weight  = cfg.dice_weight,
-        focal_weight = cfg.focal_weight,
-        focal_gamma  = cfg.focal_gamma,
-        focal_alpha  = cfg.focal_alpha,
-        dice_smooth  = cfg.dice_smooth,
+        dice_weight      = cfg.dice_weight,
+        focal_weight     = cfg.focal_weight,
+        focal_gamma      = cfg.focal_gamma,
+        focal_alpha      = cfg.focal_alpha,
+        dice_smooth      = cfg.dice_smooth,
+        use_tversky_loss = cfg.use_tversky_loss,
+        tversky_alpha    = cfg.tversky_alpha,
+        tversky_beta     = cfg.tversky_beta,
     )
 
     # Variables to track training progress / state
@@ -570,7 +573,7 @@ def train(cfg: Config, resume_path: Optional[str] = None) -> None:
         logger.error(f"Failed to save training history to JSON: {e}")
 
     logger.info(f"\nTraining complete.  Best val Dice = {best_dice:.4f}")
-    logger.info(f"Best model saved → {cfg.checkpoint_dir}/best_model.pth")
+    logger.info(f"Best model saved -> {cfg.checkpoint_dir}/best_model.pth")
     return history
 
 

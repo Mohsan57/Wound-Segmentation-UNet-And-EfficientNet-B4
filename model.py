@@ -80,6 +80,18 @@ def build_model(
         classes=num_classes,
         activation=activation,
     )
+    
+    # Warn/guard if attention is active on mobile/lightweight encoders
+    is_mobile_backbone = any(m in encoder_name.lower() for m in ["mobilenet", "ghostnet", "efficientnet-b0", "lcnet"])
+    if is_mobile_backbone and decoder_attention_type is not None:
+        import warnings
+        warnings.warn(
+            f"[Warning] Attention type '{decoder_attention_type}' is enabled with lightweight mobile backbone '{encoder_name}'. "
+            f"Global pooling or fully connected attention layers can bottleneck execution on mobile NPUs/GPUs. "
+            f"Consider setting decoder_attention_type=None or using mobile_mode=True.",
+            UserWarning
+        )
+
     if architecture != "deeplabv3plus" and decoder_attention_type is not None:
         kwargs["decoder_attention_type"] = decoder_attention_type
  
@@ -158,7 +170,7 @@ def load_checkpoint(
     optimizer=None,
     device: str = "cpu",
 ) -> dict:
-    print(f"[Checkpoint] Loading ← {path}  (device: {device})")
+    print(f"[Checkpoint] Loading <- {path}  (device: {device})")
     try:
         ckpt = torch.load(path, map_location=device)
     except Exception as e:
@@ -168,7 +180,7 @@ def load_checkpoint(
     model.load_state_dict(ckpt["model"])
     if optimizer is not None and "optimizer" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer"])
-    print(f"[Checkpoint] Loaded ← {path}  (epoch {ckpt.get('epoch', '?')})")
+    print(f"[Checkpoint] Loaded <- {path}  (epoch {ckpt.get('epoch', '?')})")
     return ckpt.get("metrics", {})
 
 

@@ -12,12 +12,13 @@ with an EfficientNet-B4 ImageNet-pretrained encoder and Hybrid Loss
 wound_seg/
 ├── config.py        ← All hyperparameters live here
 ├── dataset.py       ← WoundDataset: YOLO polygon → mask + augmentations
-├── loss.py          ← HybridLoss (DiceLoss + FocalLoss)
-├── model.py         ← UNet + EfficientNet-B4 via smp
+├── loss.py          ← HybridLoss (Dice/TverskyLoss + FocalLoss)
+├── model.py         ← UNet + EfficientNet-B4 via smp (MobileNetV3 on mobile_mode)
 ├── metrics.py       ← Dice, IoU, Precision, Recall, Hausdorff
 ├── train.py         ← Full training loop
 ├── evaluate.py      ← Validation evaluation + visualisations
 ├── inference.py     ← Prediction + ONNX / TFLite / CoreML export
+├── benchmark.py     ← Latency benchmarking (PyTorch / ONNX / TFLite)
 └── requirements.txt
 ```
 
@@ -69,15 +70,18 @@ Edit `config.py` — key settings:
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `data_root` | `"."` | Root of your dataset |
-| `image_size` | `512` | Resize all images to 512×512 |
+| `data_root` | `"wound_dataset"` | Root of your dataset |
+| `image_size` | `512` | Target H and W resolution (overridden to `384` in mobile mode) |
 | `batch_size` | `8` | Reduce to 4 if OOM |
 | `num_epochs` | `100` | Early stopping at patience=15 |
 | `learning_rate` | `1e-4` | AdamW |
-| `dice_weight` | `0.5` | Hybrid Loss Dice weight |
-| `focal_weight` | `0.5` | Hybrid Loss Focal weight |
 | `use_amp` | `True` | Mixed precision (fp16) |
 | `grad_accumulation_steps` | `2` | Effective batch = batch × steps |
+| `mobile_mode` | `False` | Swaps backbone to `mobilenetv3_large`, disables attention, and sets size to `384` |
+| `use_tversky_loss` | `True` | Activates recall-focused Tversky Loss (pins `focal_gamma = 3.0`) |
+| `tversky_alpha` | `0.3` | Penalises False Positives (FP) in Tversky Loss |
+| `tversky_beta` | `0.7` | Penalises False Negatives (FN) in Tversky Loss |
+| `num_calibration_images` | `400` | Calibration images loaded from validation split for INT8 quantization |
 
 ### 2. Run training
 
@@ -183,19 +187,24 @@ print(f"Wound area: {wound_coverage:.1f}%")
 
 ## Mobile Export
 
-### Android (TFLite)
+### Android (TFLite INT8 Quantized)
 ```bash
-pip install onnx2tf tensorflow
+pip install onnx2tf tensorflow onnxscript
+# Set UTF-8 encoding environment variable to prevent Windows terminal print errors
+$env:PYTHONIOENCODING="utf-8"  # PowerShell
+# Export:
 python inference.py --export tflite --checkpoint checkpoints/best_model.pth
 ```
 Output: `exports/wound_seg.tflite`
+*   **Calibration**: Automatically loads 400 validation split images as a representative dataset, calculating highly accurate integer scale ranges and preventing boundary noise degradation.
 
-### iOS (CoreML)
+### iOS (CoreML FP16 Package)
 ```bash
 pip install coremltools
 python inference.py --export coreml --checkpoint checkpoints/best_model.pth
 ```
-Output: `exports/WoundSeg.mlmodel`
+Output: `exports/WoundSeg.mlpackage`
+*   **Neural Engine Optimization**: Targets iOS 15+ minimum deployment and exports directly to the modern `.mlpackage` format using `FLOAT16` precision for full hardware acceleration on Apple's Neural Engine.
 
 ### ONNX only (cross-platform)
 ```bash
@@ -204,20 +213,34 @@ python inference.py --export onnx --checkpoint checkpoints/best_model.pth
 
 ---
 
-## Hybrid Loss — How It Works
+## Latency Benchmarking
+
+Use the benchmarking utility to measure inference speeds on CPU, GPU, or exported formats (ONNX / TFLite):
+
+```bash
+# Benchmark the PyTorch checkpoint on CPU/GPU, along with ONNX and TFLite exports:
+python benchmark.py \
+    --model checkpoints/best_model.pth \
+    --onnx exports/wound_seg.onnx \
+    --tflite exports/wound_seg.tflite
+```
+
+---
+
+## Hybrid Loss & Tversky Optimization
 
 ```
-L_hybrid = 0.5 × L_dice  +  0.5 × L_focal
+L_hybrid = 0.5 × L_dice_tversky  +  0.5 × L_focal
 
-L_dice  = 1 - (2·|P∩G| + ε) / (|P| + |G| + ε)
+L_tversky = 1 - (TP + ε) / (TP + α·FP + β·FN + ε)
 
-L_focal = -α · (1 - p_t)^γ · log(p_t)
+L_focal   = -α · (1 - p_t)^γ · log(p_t)
 ```
 
-| Loss | Role |
-|---|---|
-| **Dice** | Optimises overlap metric directly; robust to class imbalance |
-| **Focal** | Focuses on hard pixels (wound boundaries); down-weights easy background |
+| Component | Default | Role |
+|---|---|---|
+| **Tversky Loss** | $\alpha=0.3$, $\beta=0.7$ | Penalizes False Negatives (FN) heavily, ensuring complete coverage of the wound boundaries (Recall focus). |
+| **Focal Loss** | $\gamma=3.0$, $\alpha=0.25$ | Dynamically updates $\gamma$ to 3.0 when Tversky is active to push model focus towards hard boundary pixels. |
 
 Weights can be tuned in `config.py`:
 - `dice_weight` + `focal_weight` must sum to 1.0
