@@ -93,7 +93,7 @@ class Config:
     def __post_init__(self):
         # Override parameters if in mobile mode
         if self.mobile_mode:
-            self.encoder_name = "mobilenetv3_large"
+            self.encoder_name = "mobilenet_v2"
             self.decoder_attention_type = None  # Disable scse for hardware NPU speed
             self.image_size = 384               # Save FLOPs quadratically
             

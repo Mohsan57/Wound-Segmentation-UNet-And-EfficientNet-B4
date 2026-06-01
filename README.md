@@ -13,7 +13,7 @@ wound_seg/
 ├── config.py        ← All hyperparameters live here
 ├── dataset.py       ← WoundDataset: YOLO polygon → mask + augmentations
 ├── loss.py          ← HybridLoss (Dice/TverskyLoss + FocalLoss)
-├── model.py         ← UNet + EfficientNet-B4 via smp (MobileNetV3 on mobile_mode)
+├── model.py         ← UNet + EfficientNet-B4 via smp (MobileNetV2 on mobile_mode)
 ├── metrics.py       ← Dice, IoU, Precision, Recall, Hausdorff
 ├── train.py         ← Full training loop
 ├── evaluate.py      ← Validation evaluation + visualisations
@@ -77,7 +77,7 @@ Edit `config.py` — key settings:
 | `learning_rate` | `1e-4` | AdamW |
 | `use_amp` | `True` | Mixed precision (fp16) |
 | `grad_accumulation_steps` | `2` | Effective batch = batch × steps |
-| `mobile_mode` | `False` | Swaps backbone to `mobilenetv3_large`, disables attention, and sets size to `384` |
+| `mobile_mode` | `False` | Swaps backbone to `mobilenet_v2`, disables attention, and sets size to `384` |
 | `use_tversky_loss` | `True` | Activates recall-focused Tversky Loss (pins `focal_gamma = 3.0`) |
 | `tversky_alpha` | `0.3` | Penalises False Positives (FP) in Tversky Loss |
 | `tversky_beta` | `0.7` | Penalises False Negatives (FN) in Tversky Loss |
