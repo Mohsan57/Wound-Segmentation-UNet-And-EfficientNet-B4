@@ -4,6 +4,8 @@ Production-grade binary segmentation of wound images using a UNet decoder
 with an EfficientNet-B4 ImageNet-pretrained encoder and Hybrid Loss
 (Dice + Focal).
 
+**Kaggle Dataset**: [Wound Segmentation YOLO Format](https://www.kaggle.com/datasets/mohsanyaseen/wound-segmentation-yolo-format)
+
 ---
 
 ## Project Structure
@@ -85,9 +87,23 @@ Edit `config.py` — key settings:
 
 ### 2. Run training
 
+**Single-GPU or CPU Training**:
 ```bash
 # Start training from scratch
 python train.py
+```
+
+**Multi-GPU Training (DDP)**:
+This project supports PyTorch's Distributed Data Parallel (DDP) for high-performance multi-GPU training (e.g. utilizing the 2 GPUs provided on Kaggle).
+
+To train on 2 GPUs using `torchrun` in a terminal:
+```bash
+torchrun --nproc_per_node=2 train.py
+```
+
+Or inside a Kaggle / Jupyter Notebook cell:
+```python
+!torchrun --nproc_per_node=2 train.py
 ```
 
 ### 3. Resuming Training

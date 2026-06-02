@@ -114,7 +114,8 @@ def build_model(
 
 def freeze_encoder(model: nn.Module) -> None:
     """Freeze encoder weights — train decoder only (phase 1)."""
-    for param in model.encoder.parameters():
+    raw_model = model.module if hasattr(model, "module") else model
+    for param in raw_model.encoder.parameters():
         param.requires_grad = False
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[Model] Encoder frozen. Trainable params: {trainable:,}")
@@ -122,7 +123,8 @@ def freeze_encoder(model: nn.Module) -> None:
 
 def unfreeze_encoder(model: nn.Module) -> None:
     """Unfreeze all weights — full fine-tuning (phase 2)."""
-    for param in model.parameters():
+    raw_model = model.module if hasattr(model, "module") else model
+    for param in raw_model.parameters():
         param.requires_grad = True
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[Model] Encoder unfrozen. Trainable params: {trainable:,}")
@@ -143,9 +145,10 @@ def save_checkpoint(
     path,
     encoder_unfrozen: bool = False,
 ):
+    raw_model = model.module if hasattr(model, "module") else model
     checkpoint_dict = {
         "epoch": epoch,
-        "model": model.state_dict(),
+        "model": raw_model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "scaler": scaler.state_dict(),
