@@ -70,6 +70,14 @@ struct Args {
     /// Duration (in seconds) for throughput benchmark
     #[arg(long, default_value_t = 5)]
     duration: u64,
+
+    /// Number of threads to parallelize execution within nodes (0 = auto)
+    #[arg(long, default_value_t = 0)]
+    intra_threads: usize,
+
+    /// Number of threads to parallelize independent nodes (0 = auto)
+    #[arg(long, default_value_t = 0)]
+    inter_threads: usize,
 }
 
 #[tokio::main]
@@ -105,7 +113,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Loading ONNX model from {:?}...", args.model);
     let start_load = Instant::now();
-    let predictor = WoundPredictor::new(&args.model, args.image_size)?;
+    let predictor = WoundPredictor::new(
+        &args.model,
+        args.image_size,
+        args.intra_threads,
+        args.inter_threads,
+    )?;
     println!("Model loaded successfully in {:.2} ms.", start_load.elapsed().as_secs_f64() * 1000.0);
 
     let predictor = std::sync::Arc::new(predictor);

@@ -13,11 +13,29 @@ pub struct WoundPredictor {
 
 impl WoundPredictor {
     /// Load the ONNX model and configure session options for optimal CPU execution.
-    pub fn new<P: AsRef<Path>>(model_path: P, image_size: usize) -> ort::Result<Self> {
-        let session = Session::builder()?
+    pub fn new<P: AsRef<Path>>(
+        model_path: P,
+        image_size: usize,
+        intra_threads: usize,
+        inter_threads: usize,
+    ) -> ort::Result<Self> {
+        let mut builder = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers([ort::execution_providers::CPU::default().build()])?
-            .commit_from_file(model_path)?;
+            .with_execution_providers([ort::execution_providers::CPU::default().build()])?;
+
+        if intra_threads > 0 {
+            println!("ONNX Runtime Session Threads -> Intra-op: {}", intra_threads);
+            builder = builder.with_intra_threads(intra_threads)?;
+        }
+        if inter_threads > 0 {
+            println!("ONNX Runtime Session Threads -> Inter-op: {}", inter_threads);
+            builder = builder.with_inter_threads(inter_threads)?;
+        }
+        if intra_threads == 0 && inter_threads == 0 {
+            println!("ONNX Runtime Session Threads -> Using library defaults");
+        }
+
+        let session = builder.commit_from_file(model_path)?;
 
         Ok(Self {
             session: Arc::new(Mutex::new(session)),
@@ -59,17 +77,24 @@ impl WoundPredictor {
         let mean = [0.485, 0.456, 0.406];
         let std = [0.229, 0.224, 0.225];
 
-        // Fill active area in the tensor
-        for y in 0..hs {
-            for x in 0..ws {
-                let pixel = resized.get_pixel(x, y);
-                let r = pixel[0] as f32 / 255.0;
-                let g = pixel[1] as f32 / 255.0;
-                let b = pixel[2] as f32 / 255.0;
+        // Fill active area in the tensor using fast contiguous slice offsets to avoid bounds checking
+        let tensor_slice = tensor.as_slice_mut().expect("Tensor must be contiguous");
+        let raw_pixels = resized.as_raw();
+        let channel_stride = self.image_size * self.image_size;
+        let row_stride = self.image_size;
 
-                tensor[[0, 0, y as usize, x as usize]] = (r - mean[0]) / std[0];
-                tensor[[0, 1, y as usize, x as usize]] = (g - mean[1]) / std[1];
-                tensor[[0, 2, y as usize, x as usize]] = (b - mean[2]) / std[2];
+        for y in 0..hs as usize {
+            let tensor_row_offset = y * row_stride;
+            let pixel_row_offset = y * (ws as usize) * 3;
+            for x in 0..ws as usize {
+                let pixel_idx = pixel_row_offset + x * 3;
+                let r = raw_pixels[pixel_idx] as f32 / 255.0;
+                let g = raw_pixels[pixel_idx + 1] as f32 / 255.0;
+                let b = raw_pixels[pixel_idx + 2] as f32 / 255.0;
+
+                tensor_slice[tensor_row_offset + x] = (r - mean[0]) / std[0];
+                tensor_slice[channel_stride + tensor_row_offset + x] = (g - mean[1]) / std[1];
+                tensor_slice[2 * channel_stride + tensor_row_offset + x] = (b - mean[2]) / std[2];
             }
         }
 
@@ -126,9 +151,15 @@ impl WoundPredictor {
         // We will also return a resized probability map for validation
         let mut prob_crop = Array4::<f32>::zeros((1, 1, hs as usize, ws as usize));
 
-        for y in 0..hs {
-            for x in 0..ws {
-                let prob_val = output_tensor[[0, 0, y as usize, x as usize]];
+        let output_slice = output_tensor.as_slice().expect("Output tensor must be contiguous");
+        let active_slice = active_prob_img.as_mut();
+        let prob_crop_slice = prob_crop.as_slice_mut().expect("prob_crop must be contiguous");
+
+        for y in 0..hs as usize {
+            let tensor_row_offset = y * self.image_size;
+            let crop_row_offset = y * (ws as usize);
+            for x in 0..ws as usize {
+                let prob_val = output_slice[tensor_row_offset + x];
                 // Apply sigmoid if output contains raw logits
                 let prob_val = if prob_val < 0.0 || prob_val > 1.0 {
                     1.0 / (1.0 + (-prob_val).exp())
@@ -136,9 +167,9 @@ impl WoundPredictor {
                     prob_val
                 };
                 
-                prob_crop[[0, 0, y as usize, x as usize]] = prob_val;
+                prob_crop_slice[crop_row_offset + x] = prob_val;
                 let val_u8 = (prob_val * 255.0).clamp(0.0, 255.0) as u8;
-                active_prob_img.put_pixel(x, y, image::Luma([val_u8]));
+                active_slice[crop_row_offset + x] = val_u8;
             }
         }
 
@@ -154,12 +185,11 @@ impl WoundPredictor {
         let mut mask = GrayImage::new(orig_w, orig_h);
         let threshold_u8 = (threshold * 255.0).clamp(0.0, 255.0) as u8;
 
-        for y in 0..orig_h {
-            for x in 0..orig_w {
-                let val = resized_prob_img.get_pixel(x, y)[0];
-                let mask_val = if val >= threshold_u8 { 1 } else { 0 };
-                mask.put_pixel(x, y, image::Luma([mask_val]));
-            }
+        let resized_slice = resized_prob_img.as_raw();
+        let mask_slice = mask.as_mut();
+
+        for i in 0..(orig_w * orig_h) as usize {
+            mask_slice[i] = if resized_slice[i] >= threshold_u8 { 1 } else { 0 };
         }
 
         (mask, prob_crop)
@@ -170,57 +200,57 @@ impl WoundPredictor {
         let mut overlay = img.to_rgb8();
         let (width, height) = overlay.dimensions();
         let alpha = 0.45_f32;
+        let one_minus_alpha = 1.0 - alpha;
+        let alpha_green = alpha * 255.0;
 
-        // 1. Draw transparent green mask overlay (alpha blend)
-        for y in 0..height {
-            for x in 0..width {
-                if mask.get_pixel(x, y)[0] == 1 {
-                    let pixel = overlay.get_pixel_mut(x, y);
-                    // R_blend = 0.45 * 0 + 0.55 * R_orig
-                    pixel[0] = (pixel[0] as f32 * (1.0 - alpha)) as u8;
-                    // G_blend = 0.45 * 255 + 0.55 * G_orig
-                    pixel[1] = (alpha * 255.0 + pixel[1] as f32 * (1.0 - alpha)) as u8;
-                    // B_blend = 0.45 * 0 + 0.55 * B_orig
-                    pixel[2] = (pixel[2] as f32 * (1.0 - alpha)) as u8;
-                }
+        let overlay_slice = overlay.as_mut();
+        let mask_slice = mask.as_raw();
+
+        // 1. Draw transparent green mask overlay (alpha blend) using contiguous slice indices to avoid bounds checking
+        for i in 0..(width * height) as usize {
+            if mask_slice[i] == 1 {
+                let idx = i * 3;
+                overlay_slice[idx] = (overlay_slice[idx] as f32 * one_minus_alpha) as u8;
+                overlay_slice[idx + 1] = (alpha_green + overlay_slice[idx + 1] as f32 * one_minus_alpha) as u8;
+                overlay_slice[idx + 2] = (overlay_slice[idx + 2] as f32 * one_minus_alpha) as u8;
             }
         }
 
-        // 2. Identify boundary pixels (where mask is 1 and neighbors within radius 2 contain 0)
-        let mut boundary_pixels = Vec::new();
-        for y in 0..height {
-            for x in 0..width {
-                if mask.get_pixel(x, y)[0] == 1 {
+        // 2. Identify boundary pixels and draw outlines as solid green in place
+        let w = width as i32;
+        let h = height as i32;
+        for y in 0..h {
+            let row_offset = y * w;
+            for x in 0..w {
+                if mask_slice[(row_offset + x) as usize] == 1 {
                     let mut is_boundary = false;
                     'outer: for dy in -2..=2 {
+                        let ny = y + dy;
+                        if ny < 0 || ny >= h {
+                            is_boundary = true;
+                            break 'outer;
+                        }
+                        let n_row_offset = ny * w;
                         for dx in -2..=2 {
-                            let nx = x as i32 + dx;
-                            let ny = y as i32 + dy;
-                            if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
-                                if mask.get_pixel(nx as u32, ny as u32)[0] == 0 {
-                                    is_boundary = true;
-                                    break 'outer;
-                                }
-                            } else {
-                                // Image border counts as contour boundary
+                            let nx = x + dx;
+                            if nx < 0 || nx >= w {
+                                is_boundary = true;
+                                break 'outer;
+                            }
+                            if mask_slice[(n_row_offset + nx) as usize] == 0 {
                                 is_boundary = true;
                                 break 'outer;
                             }
                         }
                     }
                     if is_boundary {
-                        boundary_pixels.push((x, y));
+                        let idx = ((row_offset + x) as usize) * 3;
+                        overlay_slice[idx] = 0;
+                        overlay_slice[idx + 1] = 255;
+                        overlay_slice[idx + 2] = 0;
                     }
                 }
             }
-        }
-
-        // 3. Draw contour outlines as solid green (100% opacity)
-        for (x, y) in boundary_pixels {
-            let pixel = overlay.get_pixel_mut(x, y);
-            pixel[0] = 0;
-            pixel[1] = 255;
-            pixel[2] = 0;
         }
 
         overlay
