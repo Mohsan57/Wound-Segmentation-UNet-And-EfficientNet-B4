@@ -157,6 +157,9 @@ class HybridLoss(nn.Module):
         focal_gamma:  float = 2.0,
         focal_alpha:  float = 0.25,
         dice_smooth:  float = 1e-6,
+        use_tversky_loss: bool = False,
+        tversky_alpha: float = 0.3,
+        tversky_beta:  float = 0.7,
     ):
         super().__init__()
         assert abs(dice_weight + focal_weight - 1.0) < 1e-5, (
@@ -164,8 +167,15 @@ class HybridLoss(nn.Module):
         )
         self.dice_weight  = dice_weight
         self.focal_weight = focal_weight
+        self.use_tversky_loss = use_tversky_loss
 
-        self.dice_loss  = DiceLoss(smooth=dice_smooth)
+        if use_tversky_loss:
+            # Tversky Loss for recall-prioritised medical segmentation
+            self.dice_loss = TverskyLoss(alpha=tversky_alpha, beta=tversky_beta, smooth=dice_smooth)
+        else:
+            # Soft Dice Loss
+            self.dice_loss = DiceLoss(smooth=dice_smooth)
+            
         self.focal_loss = FocalLoss(gamma=focal_gamma, alpha=focal_alpha)
 
     def forward(
@@ -191,7 +201,7 @@ class HybridLoss(nn.Module):
 
         return total, {
             "total": total.item(),
-            "dice":  l_dice.item(),
+            "dice":  l_dice.item(),  # labelled as 'dice' for clean training pipeline compatibility
             "focal": l_focal.item(),
         }
 

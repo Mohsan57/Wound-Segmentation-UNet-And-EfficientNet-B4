@@ -77,7 +77,16 @@ def yolo_polygon_to_mask(
 
 def get_train_transforms(image_size: int) -> A.Compose:
     return A.Compose([
-        A.Resize(image_size, image_size),
+        # Aspect-preserving scale and pad (top-left deterministic positioning)
+        A.LongestMaxSize(max_size=image_size),
+        A.PadIfNeeded(
+            min_height=image_size,
+            min_width=image_size,
+            border_mode=cv2.BORDER_CONSTANT,
+            fill=(123.675, 116.28, 103.53),  # ImageNet mean in RGB
+            fill_mask=0,
+            position="top_left"
+        ),
 
         # Spatial
         A.HorizontalFlip(p=0.5),
@@ -92,10 +101,13 @@ def get_train_transforms(image_size: int) -> A.Compose:
         ),
         A.GridDistortion(num_steps=5, distort_limit=0.2, p=0.2),
 
+        # Clinical shadow & lighting variation
+        A.RandomShadow(p=0.2),
+
         # Colour / texture
         A.OneOf([
             A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2),
-            A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
+            A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
             A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=20, val_shift_limit=20),
         ], p=0.7),
         A.GaussNoise(var_limit=(5.0, 30.0), p=0.3),
@@ -108,7 +120,7 @@ def get_train_transforms(image_size: int) -> A.Compose:
             min_holes=1, fill_value=0, p=0.2
         ),
 
-        # Normalise & tensor
+        # Normalise & tensor (padded ImageNet mean scales exactly to 0.0)
         A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ToTensorV2(),
     ])
@@ -116,7 +128,16 @@ def get_train_transforms(image_size: int) -> A.Compose:
 
 def get_val_transforms(image_size: int) -> A.Compose:
     return A.Compose([
-        A.Resize(image_size, image_size),
+        # Aspect-preserving scale and pad (top-left deterministic positioning)
+        A.LongestMaxSize(max_size=image_size),
+        A.PadIfNeeded(
+            min_height=image_size,
+            min_width=image_size,
+            border_mode=cv2.BORDER_CONSTANT,
+            fill=(123.675, 116.28, 103.53),  # ImageNet mean in RGB
+            fill_mask=0,
+            position="top_left"
+        ),
         A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ToTensorV2(),
     ])
@@ -243,9 +264,9 @@ if __name__ == "__main__":
     import sys
 
     ds = WoundDataset(
-        images_dir="images/train",
-        labels_dir="labels/train",
-        masks_dir="masks",
+        images_dir="wound_dataset/images/train",
+        labels_dir="wound_dataset/labels/train",
+        masks_dir="wound_dataset/masks",
         transform=get_train_transforms(512),
         image_size=512,
         label_smoothing=0.05,
@@ -255,4 +276,4 @@ if __name__ == "__main__":
     print(f"Image shape : {img.shape}  dtype: {img.dtype}")
     print(f"Mask  shape : {msk.shape}  dtype: {msk.dtype}")
     print(f"Mask  min/max: {msk.min():.3f} / {msk.max():.3f}")
-    print("Dataset OK ✓")
+    print("Dataset OK")

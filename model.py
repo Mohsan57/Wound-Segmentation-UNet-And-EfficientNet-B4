@@ -80,6 +80,18 @@ def build_model(
         classes=num_classes,
         activation=activation,
     )
+    
+    # Warn/guard if attention is active on mobile/lightweight encoders
+    is_mobile_backbone = any(m in encoder_name.lower() for m in ["mobilenet", "ghostnet", "efficientnet-b0", "lcnet"])
+    if is_mobile_backbone and decoder_attention_type is not None:
+        import warnings
+        warnings.warn(
+            f"[Warning] Attention type '{decoder_attention_type}' is enabled with lightweight mobile backbone '{encoder_name}'. "
+            f"Global pooling or fully connected attention layers can bottleneck execution on mobile NPUs/GPUs. "
+            f"Consider setting decoder_attention_type=None or using mobile_mode=True.",
+            UserWarning
+        )
+
     if architecture != "deeplabv3plus" and decoder_attention_type is not None:
         kwargs["decoder_attention_type"] = decoder_attention_type
  
@@ -102,7 +114,8 @@ def build_model(
 
 def freeze_encoder(model: nn.Module) -> None:
     """Freeze encoder weights — train decoder only (phase 1)."""
-    for param in model.encoder.parameters():
+    raw_model = model.module if hasattr(model, "module") else model
+    for param in raw_model.encoder.parameters():
         param.requires_grad = False
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[Model] Encoder frozen. Trainable params: {trainable:,}")
@@ -110,7 +123,8 @@ def freeze_encoder(model: nn.Module) -> None:
 
 def unfreeze_encoder(model: nn.Module) -> None:
     """Unfreeze all weights — full fine-tuning (phase 2)."""
-    for param in model.parameters():
+    raw_model = model.module if hasattr(model, "module") else model
+    for param in raw_model.parameters():
         param.requires_grad = True
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[Model] Encoder unfrozen. Trainable params: {trainable:,}")
@@ -131,9 +145,10 @@ def save_checkpoint(
     path,
     encoder_unfrozen: bool = False,
 ):
+    raw_model = model.module if hasattr(model, "module") else model
     checkpoint_dict = {
         "epoch": epoch,
-        "model": model.state_dict(),
+        "model": raw_model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "scaler": scaler.state_dict(),
@@ -158,7 +173,7 @@ def load_checkpoint(
     optimizer=None,
     device: str = "cpu",
 ) -> dict:
-    print(f"[Checkpoint] Loading ← {path}  (device: {device})")
+    print(f"[Checkpoint] Loading <- {path}  (device: {device})")
     try:
         ckpt = torch.load(path, map_location=device)
     except Exception as e:
@@ -168,7 +183,7 @@ def load_checkpoint(
     model.load_state_dict(ckpt["model"])
     if optimizer is not None and "optimizer" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer"])
-    print(f"[Checkpoint] Loaded ← {path}  (epoch {ckpt.get('epoch', '?')})")
+    print(f"[Checkpoint] Loaded <- {path}  (epoch {ckpt.get('epoch', '?')})")
     return ckpt.get("metrics", {})
 
 

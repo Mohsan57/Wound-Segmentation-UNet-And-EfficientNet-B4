@@ -11,3 +11,6 @@ exports/
 *.zip
 input/
 outputs/
+
+rust_inference/target/
+rust_inference/output/

@@ -37,29 +37,49 @@ IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
-def preprocess(image_bgr: np.ndarray, image_size: int) -> torch.Tensor:
+def preprocess(image_bgr: np.ndarray, image_size: int) -> Tuple[torch.Tensor, Tuple[int, int]]:
     """
     BGR numpy image → normalised (1, 3, H, W) float32 tensor.
+    Uses aspect-preserving scaling and padding to the top-left corner.
+    Returns the normalised tensor and the scaled height and width (scaled_hw).
     """
-    img = cv2.resize(image_bgr, (image_size, image_size))
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-    img = (img - IMAGENET_MEAN) / IMAGENET_STD
-    img = img.transpose(2, 0, 1)                  # HWC → CHW
-    return torch.from_numpy(img).unsqueeze(0)      # → (1, 3, H, W)
+    h0, w0 = image_bgr.shape[:2]
+    scale = image_size / max(h0, w0)
+    hs, ws = int(round(h0 * scale)), int(round(w0 * scale))
+    
+    # Resize keeping aspect ratio
+    resized = cv2.resize(image_bgr, (ws, hs))
+    # Convert BGR to RGB
+    resized_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+    
+    # Pad to square (top_left position means padding on bottom and right)
+    # Pad with ImageNet mean (123.675, 116.28, 103.53) in RGB
+    padded = np.zeros((image_size, image_size, 3), dtype=np.float32)
+    padded[:, :] = [123.675, 116.28, 103.53]
+    padded[:hs, :ws] = resized_rgb
+    
+    # Normalise (ImageNet mean/std)
+    normed = (padded / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
+    tensor = normed.transpose(2, 0, 1)  # HWC → CHW
+    return torch.from_numpy(tensor).unsqueeze(0), (hs, ws)
 
 
 def postprocess(
     logits:       torch.Tensor,
     original_hw:  Tuple[int, int],
+    scaled_hw:    Tuple[int, int],
     threshold:    float = 0.5,
 ) -> np.ndarray:
     """
-    Logit tensor → resized binary mask (H_orig × W_orig).
+    Logit tensor → cropped and resized binary mask (H_orig × W_orig).
     """
     prob = torch.sigmoid(logits).squeeze().cpu().numpy()  # (H, W) float
-    # Resize back to original resolution
-    prob = cv2.resize(prob, (original_hw[1], original_hw[0]))
-    return (prob >= threshold).astype(np.uint8)
+    hs, ws = scaled_hw
+    # Crop out the active region from top-left
+    cropped_prob = prob[:hs, :ws]
+    # Resize back to original dimensions
+    prob_orig = cv2.resize(cropped_prob, (original_hw[1], original_hw[0]))
+    return (prob_orig >= threshold).astype(np.uint8)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -145,12 +165,18 @@ class WoundPredictor:
 
         orig_h, orig_w = image.shape[:2]
 
-        tensor = preprocess(image, self.cfg.image_size).to(self.device)
+        tensor, scaled_hw = preprocess(image, self.cfg.image_size)
+        tensor = tensor.to(self.device)
         logits = self.model(tensor)
 
-        prob   = torch.sigmoid(logits).squeeze().cpu().numpy()
-        prob   = cv2.resize(prob, (orig_w, orig_h))
-        mask   = (prob >= thr).astype(np.uint8)
+        # Post-process to get cropped/padded mask
+        mask = postprocess(logits, (orig_h, orig_w), scaled_hw, thr)
+        
+        # Crop/pad probability map too for visual validation alignment
+        prob = torch.sigmoid(logits).squeeze().cpu().numpy()
+        hs, ws = scaled_hw
+        prob = cv2.resize(prob[:hs, :ws], (orig_w, orig_h))
+        
         overlay = draw_overlay(image, mask)
 
         return mask, prob, overlay
@@ -229,7 +255,7 @@ def export_onnx(
         },
         do_constant_folding=True,
     )
-    print(f"ONNX model exported → {output_path}")
+    print(f"ONNX model exported -> {output_path}")
 
     # Verify
     try:
@@ -245,12 +271,56 @@ def export_onnx(
 #  TFLite export  (Android)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def generate_calibration_data(images_dir: str, output_npy: str, image_size: int, num_images: int = 400):
+    print(f"[Calibration] Generating dataset from {images_dir} (target: {num_images} images, size {image_size})")
+    img_paths = list(Path(images_dir).glob("*"))
+    img_paths = [p for p in img_paths if p.suffix.lower() in {".jpg", ".jpeg", ".png"}]
+    
+    if len(img_paths) == 0:
+        raise FileNotFoundError(f"No validation images found in {images_dir} for calibration.")
+        
+    import random
+    random.seed(42)
+    if len(img_paths) > num_images:
+        img_paths = random.sample(img_paths, num_images)
+    else:
+        num_images = len(img_paths)
+        
+    calib_list = []
+    for p in img_paths:
+        img = cv2.imread(str(p))
+        if img is None:
+            continue
+        h0, w0 = img.shape[:2]
+        scale = image_size / max(h0, w0)
+        hs, ws = int(round(h0 * scale)), int(round(w0 * scale))
+        
+        resized = cv2.resize(img, (ws, hs))
+        resized_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        
+        # Pad to square with ImageNet mean (123.675, 116.28, 103.53)
+        padded = np.zeros((image_size, image_size, 3), dtype=np.float32)
+        padded[:, :] = [123.675, 116.28, 103.53]
+        padded[:hs, :ws] = resized_rgb
+        
+        # Scaled to 0-1 range (onnx2tf applies mean/std normalisation)
+        calib_img = padded / 255.0
+        calib_img = calib_img.transpose(2, 0, 1)  # HWC → CHW (RGB)
+        calib_list.append(calib_img)
+        
+    calib_arr = np.array(calib_list, dtype=np.float32)  # (N, 3, H, W)
+    np.save(output_npy, calib_arr)
+    print(f"[Calibration] Saved calibration array to {output_npy}")
+
+
 def export_tflite(
     onnx_path:   str = "exports/wound_seg.onnx",
     output_path: str = "exports/wound_seg.tflite",
+    config:      Optional[Config] = None,
 ) -> None:
     """
     Convert ONNX → TFLite using onnx2tf.
+    Includes full-integer calibration to ensure clean quantization scales.
     Install: pip install onnx2tf
     """
     try:
@@ -259,17 +329,39 @@ def export_tflite(
         print("Install onnx2tf:  pip install onnx2tf")
         return
 
-    import subprocess
-    cmd = [
-        "onnx2tf",
-        "-i", onnx_path,
-        "-o", str(Path(output_path).parent),
-        "-oiqt",                   # INT8 quantisation
-        "--non_verbose",
-    ]
-    print(f"Running: {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
-    print(f"TFLite model → {output_path}")
+    cfg = config or Config()
+    calib_npy = "exports/calibration_data.npy"
+    val_images_dir = Path(cfg.data_root) / "images" / "val"
+    
+    try:
+        # 1. Generate representative dataset
+        generate_calibration_data(
+            images_dir=str(val_images_dir),
+            output_npy=calib_npy,
+            image_size=cfg.image_size,
+            num_images=cfg.num_calibration_images
+        )
+        
+        # 2. Run conversion using -qcind to calibrate activations
+        # Mean/std arguments are given as bracketed lists without spaces
+        import subprocess
+        cmd = [
+            "onnx2tf",
+            "-i", onnx_path,
+            "-o", str(Path(output_path).parent),
+            "-oiqt",                   # INT8 quantisation
+            "-qcind", "input", calib_npy, "[0.485,0.456,0.406]", "[0.229,0.224,0.225]",
+            "--non_verbose",
+        ]
+        print(f"Running: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True)
+        print(f"TFLite model -> {output_path}")
+        
+    finally:
+        # Clean up calibration file
+        if os.path.exists(calib_npy):
+            os.remove(calib_npy)
+            print("[Calibration] Temporary calibration file cleaned up.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -278,11 +370,12 @@ def export_tflite(
 
 def export_coreml(
     onnx_path:    str = "exports/wound_seg.onnx",
-    output_path:  str = "exports/WoundSeg.mlmodel",
+    output_path:  str = "exports/WoundSeg.mlpackage",
     image_size:   int = 512,
 ) -> None:
     """
     Convert ONNX → CoreML using coremltools.
+    Targets iOS 15+ and modern mlpackage format with FP16 weights.
     Install: pip install coremltools
     """
     try:
@@ -291,17 +384,32 @@ def export_coreml(
         print("Install coremltools:  pip install coremltools")
         return
 
-    model = ct.converters.onnx.convert(
-        model=onnx_path,
-        minimum_ios_deployment_target="14",
-    )
+    # Check if target path ends with .mlpackage or .mlmodel
+    if not output_path.endswith(".mlpackage") and not output_path.endswith(".mlmodel"):
+        output_path = str(Path(output_path).with_suffix(".mlpackage"))
 
-    model.short_description  = "Wound segmentation — UNet + EfficientNet-B4"
+    # Convert with precision FLOAT16 target for Neural Engine optimization
+    try:
+        print("[CoreML] Converting using modern ct.convert to package format...")
+        model = ct.convert(
+            onnx_path,
+            source="onnx",
+            minimum_deployment_target=ct.target.iOS15,
+            compute_precision=ct.precision.FLOAT16
+        )
+    except Exception as e:
+        print(f"[CoreML] Modern ct.convert failed: {e}. Falling back to old converters...")
+        model = ct.converters.onnx.convert(
+            model=onnx_path,
+            minimum_ios_deployment_target="15",
+        )
+
+    model.short_description  = "Wound segmentation — UNet"
     model.input_description["input"]   = "RGB wound image"
     model.output_description["output"] = "Binary wound mask probability"
 
     model.save(output_path)
-    print(f"CoreML model → {output_path}")
+    print(f"CoreML model -> {output_path}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -328,11 +436,11 @@ if __name__ == "__main__":
 
     elif args.export == "tflite":
         export_onnx(args.checkpoint, output_path="exports/wound_seg.onnx", config=cfg)
-        export_tflite("exports/wound_seg.onnx", "exports/wound_seg.tflite")
+        export_tflite("exports/wound_seg.onnx", "exports/wound_seg.tflite", config=cfg)
 
     elif args.export == "coreml":
         export_onnx(args.checkpoint, output_path="exports/wound_seg.onnx", config=cfg)
-        export_coreml("exports/wound_seg.onnx", "exports/WoundSeg.mlmodel")
+        export_coreml("exports/wound_seg.onnx", "exports/WoundSeg.mlpackage", image_size=cfg.image_size)
 
     # ── Inference mode ────────────────────────────────────────────────────────
     elif args.image:

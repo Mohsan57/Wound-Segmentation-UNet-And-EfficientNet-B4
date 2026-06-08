@@ -209,7 +209,7 @@ def save_visual_grid(
         cv2.imwrite(str(out / fname), row)
         collected[img_path.name] = row
 
-    print(f"[Visualise] Saved {len(collected)} panels → {out}")
+    print(f"[Visualise] Saved {len(collected)} panels -> {out}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -269,7 +269,7 @@ def save_confusion_matrix(metrics_agg: Dict, output_dir: str) -> None:
     out_path = Path(output_dir) / "evaluation_summary.png"
     plt.savefig(str(out_path), dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"[Evaluate] Summary chart → {out_path}")
+    print(f"[Evaluate] Summary chart -> {out_path}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -312,7 +312,7 @@ def main(cfg: Config, checkpoint_path: str, output_dir: str) -> None:
         writer = csv.DictWriter(f, fieldnames=results[0].keys())
         writer.writeheader()
         writer.writerows(results)
-    print(f"[Evaluate] Per-image CSV → {csv_path}")
+    print(f"[Evaluate] Per-image CSV -> {csv_path}")
 
     # ── Aggregate ──────────────────────────────────────────────────────────
     keys = ["dice", "iou", "precision", "recall", "specificity", "hausdorff"]

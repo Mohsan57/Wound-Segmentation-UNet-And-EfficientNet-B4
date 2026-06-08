@@ -19,7 +19,7 @@ class Config:
     export_dir: str = "exports"                # For TFLite / ONNX exports
 
     # ─────────────────────────────────────────────
-    #  Model
+    #  Model & Mode
     # ─────────────────────────────────────────────
     encoder_name: str = "efficientnet-b4"      # SMP encoder
     encoder_weights: str = "imagenet"          # Pretrained weights
@@ -27,6 +27,8 @@ class Config:
     num_classes: int = 1                       # Binary segmentation
     activation: str = "sigmoid"
     decoder_attention_type: str = "scse"       # "scse" | "none" — channel+spatial squeeze-excitation on decoder blocks
+    mobile_mode: bool = False                  # Optimization for mobile targets
+
     # ─────────────────────────────────────────────
     #  Input
     # ─────────────────────────────────────────────
@@ -46,13 +48,17 @@ class Config:
     grad_accumulation_steps: int = 2           # Effective batch = batch_size × grad_accumulation_steps
 
     # ─────────────────────────────────────────────
-    #  Hybrid Loss Weights
+    #  Loss Weights (Dice / Tversky + Focal)
     # ─────────────────────────────────────────────
     dice_weight: float = 0.5
     focal_weight: float = 0.5
-    focal_gamma: float = 2.0                   # Focus on hard examples
+    focal_gamma: float = 2.0                   # Focus on hard examples (overridden to 3.0 if Tversky is active)
     focal_alpha: float = 0.25                  # Class balance factor
     dice_smooth: float = 1e-6
+    
+    use_tversky_loss: bool = True              # Enable recall-prioritised loss
+    tversky_alpha: float = 0.3                 # Penalises FP (false positives)
+    tversky_beta: float = 0.7                  # Penalises FN (false negatives)
 
     # ─────────────────────────────────────────────
     #  Scheduler  (Cosine Annealing + Warmup)
@@ -62,11 +68,12 @@ class Config:
     scheduler_eta_min: float = 1e-6
 
     # ─────────────────────────────────────────────
-    #  Regularization / Augmentation
+    #  Regularization / Augmentation / Quantization
     # ─────────────────────────────────────────────
     use_augmentation: bool = True
     label_smoothing: float = 0.05              # Slight label smoothing
     use_amp: bool = True                       # Automatic Mixed Precision (fp16)
+    num_calibration_images: int = 400          # Number of validation images for TFLite calibration
 
     # ─────────────────────────────────────────────
     #  Threshold & Metrics
@@ -84,6 +91,17 @@ class Config:
     seed: int = 42
 
     def __post_init__(self):
+        # Override parameters if in mobile mode
+        if self.mobile_mode:
+            self.encoder_name = "mobilenet_v2"
+            self.decoder_attention_type = None  # Disable scse for hardware NPU speed
+            self.image_size = 384               # Save FLOPs quadratically
+            
+        # Pin focal_gamma when Tversky Loss is active to strengthen boundary focus
+        if self.use_tversky_loss:
+            self.focal_gamma = 3.0
+
         Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
         Path(self.log_dir).mkdir(parents=True, exist_ok=True)
         Path(self.export_dir).mkdir(parents=True, exist_ok=True)
+
