@@ -39,7 +39,9 @@ class Config:
     #  Training
     # ─────────────────────────────────────────────
     batch_size: int = 8
-    num_workers: int = 4
+    num_workers: int = 4                      # Default workers count, capped by CPU count in __post_init__
+    persistent_workers: bool = True            # Keep workers alive across epochs
+    prefetch_factor: int = 4                   # Number of batches loaded in advance by each worker
     num_epochs: int = 100
     learning_rate: float = 1e-4
     weight_decay: float = 1e-4
@@ -100,6 +102,10 @@ class Config:
         # Pin focal_gamma when Tversky Loss is active to strengthen boundary focus
         if self.use_tversky_loss:
             self.focal_gamma = 3.0
+
+        # Cap num_workers by actual CPU count
+        import os
+        self.num_workers = min(self.num_workers, os.cpu_count() or 1)
 
         Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
         Path(self.log_dir).mkdir(parents=True, exist_ok=True)

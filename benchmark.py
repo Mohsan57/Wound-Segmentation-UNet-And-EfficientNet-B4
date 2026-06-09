@@ -165,7 +165,10 @@ if __name__ == "__main__":
         
         # Load weights
         try:
-            ckpt = torch.load(args.model, map_location=device)
+            try:
+                ckpt = torch.load(args.model, map_location=device)
+            except Exception:
+                ckpt = torch.load(args.model, map_location=device, weights_only=False)
             state_dict = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
             model.load_state_dict(state_dict)
             model.eval()

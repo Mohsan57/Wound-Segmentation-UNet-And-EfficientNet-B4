@@ -175,6 +175,8 @@ def train_one_epoch(
     for step, (images, masks) in enumerate(loader):
         images = images.to(device, non_blocking=True)
         masks  = masks.to(device,  non_blocking=True)
+        if device.type == "cuda":
+            images = images.to(memory_format=torch.channels_last)
 
         with autocast(enabled=scaler.is_enabled()):
             logits = model(images)
@@ -256,6 +258,8 @@ def validate(
     for images, masks in loader:
         images = images.to(device, non_blocking=True)
         masks  = masks.to(device,  non_blocking=True)
+        if device.type == "cuda":
+            images = images.to(memory_format=torch.channels_last)
 
         logits = model(images)
         _, loss_dict = criterion(logits, masks)
@@ -363,12 +367,16 @@ def train(cfg: Config, resume_path: Optional[str] = None) -> Optional[list]:
         train_loader = DataLoader(
             train_ds, batch_size=cfg.batch_size, shuffle=(train_sampler is None),
             num_workers=cfg.num_workers, pin_memory=True, drop_last=True,
-            sampler=train_sampler
+            sampler=train_sampler,
+            persistent_workers=cfg.persistent_workers if cfg.num_workers > 0 else False,
+            prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None
         )
         val_loader = DataLoader(
             val_ds, batch_size=cfg.batch_size, shuffle=False,
             num_workers=cfg.num_workers, pin_memory=True,
-            sampler=val_sampler
+            sampler=val_sampler,
+            persistent_workers=cfg.persistent_workers if cfg.num_workers > 0 else False,
+            prefetch_factor=cfg.prefetch_factor if cfg.num_workers > 0 else None
         )
         
         if rank == 0:
@@ -384,6 +392,10 @@ def train(cfg: Config, resume_path: Optional[str] = None) -> Optional[list]:
             num_classes     = cfg.num_classes,
             activation      = None,               # raw logits -> loss handles sigmoid
         ).to(device)
+
+        # Apply Channels Last on GPU
+        if device.type == "cuda":
+            model = model.to(memory_format=torch.channels_last)
 
         # Loss
         criterion = HybridLoss(
@@ -549,6 +561,16 @@ def train(cfg: Config, resume_path: Optional[str] = None) -> Optional[list]:
             model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
         else:
             model = raw_model
+
+        # Compile model (PyTorch 2.x compile)
+        if hasattr(torch, "compile"):
+            if rank == 0:
+                logger.info("[Optimisation] Compiling model with torch.compile()...")
+            try:
+                model = torch.compile(model)
+            except Exception as e:
+                if rank == 0:
+                    logger.warning(f"[Optimisation] torch.compile failed: {e}. Running uncompiled model.")
 
         # Early stopping
         early_stop = EarlyStopping(patience=cfg.early_stopping_patience, mode="max")
