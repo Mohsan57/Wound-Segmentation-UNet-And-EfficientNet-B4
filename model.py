@@ -180,7 +180,16 @@ def load_checkpoint(
         ckpt = torch.load(path, map_location=device, weights_only=False)
 
 
-    model.load_state_dict(ckpt["model"])
+    # Attempt strict loading first
+    try:
+        model.load_state_dict(ckpt["model"])
+    except RuntimeError as e:
+        print(f"[Checkpoint] Strict load failed: {e}")
+        # Try loading without strictness to ignore missing or unexpected keys
+        state_dict = ckpt["model"]
+        # Remove possible DataParallel prefix "module."
+        cleaned_state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+        model.load_state_dict(cleaned_state_dict, strict=False)
     if optimizer is not None and "optimizer" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer"])
     print(f"[Checkpoint] Loaded <- {path}  (epoch {ckpt.get('epoch', '?')})")

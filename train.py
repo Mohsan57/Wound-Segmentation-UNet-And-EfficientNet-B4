@@ -323,7 +323,7 @@ def train(cfg: Config, resume_path: Optional[str] = None) -> Optional[list]:
     
     if rank == 0:
         logger.info("=" * 60)
-        logger.info("  Wound Segmentation Training - UNet + EfficientNet-B4")
+        logger.info(f"  Wound Segmentation Training - {cfg.architecture} + {cfg.encoder_name}")
         logger.info("=" * 60)
         logger.info(f"  Device          : {device} (DDP={is_ddp}, World Size={world_size})")
         logger.info(f"  Image size      : {cfg.image_size}")
