@@ -134,6 +134,22 @@ def unfreeze_encoder(model: nn.Module) -> None:
 #  Checkpoint helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+def clean_state_dict(state_dict: dict) -> dict:
+    """Remove compilation (_orig_mod.) and DDP (module.) prefixes from state dict keys."""
+    cleaned = {}
+    for k, v in state_dict.items():
+        new_k = k
+        while True:
+            if new_k.startswith("_orig_mod."):
+                new_k = new_k[len("_orig_mod."):]
+            elif new_k.startswith("module."):
+                new_k = new_k[len("module."):]
+            else:
+                break
+        cleaned[new_k] = v
+    return cleaned
+
+
 def save_checkpoint(
     model,
     optimizer,
@@ -145,7 +161,14 @@ def save_checkpoint(
     path,
     encoder_unfrozen: bool = False,
 ):
-    raw_model = model.module if hasattr(model, "module") else model
+    raw_model = model
+    # Unwrap compiled model
+    if hasattr(raw_model, "_orig_mod"):
+        raw_model = raw_model._orig_mod
+    # Unwrap DDP model
+    if hasattr(raw_model, "module"):
+        raw_model = raw_model.module
+
     checkpoint_dict = {
         "epoch": epoch,
         "model": raw_model.state_dict(),
@@ -179,21 +202,20 @@ def load_checkpoint(
     except Exception as e:
         ckpt = torch.load(path, map_location=device, weights_only=False)
 
+    state_dict = ckpt["model"] if (isinstance(ckpt, dict) and "model" in ckpt) else ckpt
+    cleaned_state_dict = clean_state_dict(state_dict)
 
     # Attempt strict loading first
     try:
-        model.load_state_dict(ckpt["model"])
+        model.load_state_dict(cleaned_state_dict, strict=True)
     except RuntimeError as e:
         print(f"[Checkpoint] Strict load failed: {e}")
         # Try loading without strictness to ignore missing or unexpected keys
-        state_dict = ckpt["model"]
-        # Remove possible DataParallel prefix "module."
-        cleaned_state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
         model.load_state_dict(cleaned_state_dict, strict=False)
-    if optimizer is not None and "optimizer" in ckpt:
+    if optimizer is not None and isinstance(ckpt, dict) and "optimizer" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer"])
-    print(f"[Checkpoint] Loaded <- {path}  (epoch {ckpt.get('epoch', '?')})")
-    return ckpt.get("metrics", {})
+    print(f"[Checkpoint] Loaded <- {path}  (epoch {ckpt.get('epoch', '?') if isinstance(ckpt, dict) else '?'})")
+    return ckpt.get("metrics", {}) if isinstance(ckpt, dict) else {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

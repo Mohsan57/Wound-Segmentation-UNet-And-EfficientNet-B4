@@ -17,7 +17,6 @@ import csv
 import os
 from pathlib import Path
 from typing import List, Dict
-
 import cv2
 import numpy as np
 import torch
@@ -348,6 +347,7 @@ def main(cfg: Config, checkpoint_path: str, output_dir: str) -> None:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Wound Segmentation Evaluation")
     parser.add_argument("--checkpoint",  type=str, default="checkpoints/best_model.pth")
     parser.add_argument("--output_dir",  type=str, default="eval_results")
     parser.add_argument("--device", type=str, default=None, help="Device to run evaluation on (e.g., cuda or cpu)")
