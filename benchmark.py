@@ -14,7 +14,7 @@ import torch
 from pathlib import Path
 
 from config import Config
-from model import build_model
+from model import build_model, load_checkpoint
 
 
 def benchmark_pytorch(model, device, image_size: int, runs: int = 200, warmup: int = 50):
@@ -165,12 +165,7 @@ if __name__ == "__main__":
         
         # Load weights
         try:
-            try:
-                ckpt = torch.load(args.model, map_location=device)
-            except Exception:
-                ckpt = torch.load(args.model, map_location=device, weights_only=False)
-            state_dict = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
-            model.load_state_dict(state_dict)
+            load_checkpoint(model, args.model, device=str(device))
             model.eval()
             
             # Benchmark on CPU

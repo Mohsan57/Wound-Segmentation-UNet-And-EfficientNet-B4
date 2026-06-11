@@ -23,7 +23,7 @@ class Config:
     # ─────────────────────────────────────────────
     encoder_name: str = "efficientnet-b4"      # SMP encoder
     encoder_weights: str = "imagenet"          # Pretrained weights
-    architecture: str = "unet"                 # unet | unetplusplus | deeplabv3plus
+    architecture: str = "unetplusplus"         # unet | unetplusplus | deeplabv3plus
     num_classes: int = 1                       # Binary segmentation
     activation: str = "sigmoid"
     decoder_attention_type: str = "scse"       # "scse" | "none" — channel+spatial squeeze-excitation on decoder blocks

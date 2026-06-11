@@ -38,7 +38,7 @@ from config  import Config
 from dataset import WoundDataset, get_train_transforms, get_val_transforms
 from loss    import HybridLoss
 from metrics import SegmentationMetrics
-from model   import build_model, freeze_encoder, unfreeze_encoder, save_checkpoint
+from model   import build_model, freeze_encoder, unfreeze_encoder, save_checkpoint, clean_state_dict
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -428,7 +428,7 @@ def train(cfg: Config, resume_path: Optional[str] = None) -> Optional[list]:
 
             if isinstance(checkpoint, dict) and "model" in checkpoint:
                 # Full training checkpoint
-                raw_model.load_state_dict(checkpoint["model"])
+                raw_model.load_state_dict(clean_state_dict(checkpoint["model"]))
                 start_epoch = checkpoint["epoch"] + 1
                 best_dice = checkpoint.get("best_dice", 0.0)
                 if rank == 0:
@@ -518,7 +518,7 @@ def train(cfg: Config, resume_path: Optional[str] = None) -> Optional[list]:
             else:
                 # Weights-only state dict (e.g. best_model.pth weight-only file)
                 state_dict = checkpoint["model"] if (isinstance(checkpoint, dict) and "model" in checkpoint) else checkpoint
-                raw_model.load_state_dict(state_dict)
+                raw_model.load_state_dict(clean_state_dict(state_dict))
                 if rank == 0:
                     logger.info("[Resume] Loaded weights-only state dict. Starting training from epoch 1 (Phase 1).")
                 
