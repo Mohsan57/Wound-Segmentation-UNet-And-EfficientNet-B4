@@ -342,15 +342,15 @@ def export_tflite(
             num_images=cfg.num_calibration_images
         )
         
-        # 2. Run conversion using -qcind to calibrate activations
-        # Mean/std arguments are given as bracketed lists without spaces
+        # 2. Run conversion using -cind to provide calibration data
+        # Mean/std for quantisation normalisation are passed via -qnm and -qns
         import subprocess
         cmd = [
             "onnx2tf",
             "-i", onnx_path,
             "-o", str(Path(output_path).parent),
-            "-oiqt",                   # INT8 quantisation
-            "-qcind", "input", calib_npy, "[0.485,0.456,0.406]", "[0.229,0.224,0.225]",
+            "-oiqt",                    # INT8 quantisation
+            "-cind", "input", calib_npy, "[[[[0.485,0.456,0.406]]]]", "[[[[0.229,0.224,0.225]]]]",
             "--non_verbose",
         ]
         print(f"Running: {' '.join(cmd)}")
