@@ -77,7 +77,7 @@ def yolo_polygon_to_mask(
 
 def get_train_transforms(image_size: int) -> A.Compose:
     return A.Compose([
-        # Aspect-preserving scale and pad (top-left deterministic positioning)
+        # Aspect-preserving scale and pad (centered positioning)
         A.LongestMaxSize(max_size=image_size),
         A.PadIfNeeded(
             min_height=image_size,
@@ -85,39 +85,46 @@ def get_train_transforms(image_size: int) -> A.Compose:
             border_mode=cv2.BORDER_CONSTANT,
             fill=(123.675, 116.28, 103.53),  # ImageNet mean in RGB
             fill_mask=0,
-            position="top_left"
+            position="center"
         ),
 
         # Spatial
         A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.3),
+        A.VerticalFlip(p=0.5),
+        A.RandomRotate90(p=0.5),
         A.ShiftScaleRotate(
-            shift_limit=0.1, scale_limit=0.15, rotate_limit=30,
-            border_mode=cv2.BORDER_CONSTANT, p=0.6
+            shift_limit=0.05,
+            scale_limit=0.1,
+            rotate_limit=15,
+            border_mode=cv2.BORDER_CONSTANT,
+            p=0.5,
         ),
-        A.ElasticTransform(
-            alpha=60, sigma=12, alpha_affine=12,
-            border_mode=cv2.BORDER_CONSTANT, p=0.3
+
+        # Colour / intensity / blur
+        A.RandomBrightnessContrast(
+            brightness_limit=0.2,
+            contrast_limit=0.2,
+            p=0.5,
         ),
-        A.GridDistortion(num_steps=5, distort_limit=0.2, p=0.2),
-
-        # Clinical shadow & lighting variation
-        A.RandomShadow(p=0.2),
-
-        # Colour / texture
-        A.OneOf([
-            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2),
-            A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
-            A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=20, val_shift_limit=20),
-        ], p=0.7),
-        A.GaussNoise(var_limit=(5.0, 30.0), p=0.3),
-        A.GaussianBlur(blur_limit=(3, 5), p=0.2),
-        A.CLAHE(clip_limit=3.0, p=0.3),         # Helps with wound texture
+        A.HueSaturationValue(
+            hue_shift_limit=10,
+            sat_shift_limit=20,
+            val_shift_limit=20,
+            p=0.5,
+        ),
+        A.GaussianBlur(
+            blur_limit=(3, 5),
+            p=0.2,
+        ),
 
         # Dropout
         A.CoarseDropout(
-            max_holes=8, max_height=32, max_width=32,
-            min_holes=1, fill_value=0, p=0.2
+            max_holes=8,
+            max_height=32,
+            max_width=32,
+            min_holes=1,
+            fill_value=0,
+            p=0.2,
         ),
 
         # Normalise & tensor (padded ImageNet mean scales exactly to 0.0)
@@ -128,7 +135,7 @@ def get_train_transforms(image_size: int) -> A.Compose:
 
 def get_val_transforms(image_size: int) -> A.Compose:
     return A.Compose([
-        # Aspect-preserving scale and pad (top-left deterministic positioning)
+        # Aspect-preserving scale and pad (centered positioning)
         A.LongestMaxSize(max_size=image_size),
         A.PadIfNeeded(
             min_height=image_size,
@@ -136,7 +143,7 @@ def get_val_transforms(image_size: int) -> A.Compose:
             border_mode=cv2.BORDER_CONSTANT,
             fill=(123.675, 116.28, 103.53),  # ImageNet mean in RGB
             fill_mask=0,
-            position="top_left"
+            position="center"
         ),
         A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ToTensorV2(),
