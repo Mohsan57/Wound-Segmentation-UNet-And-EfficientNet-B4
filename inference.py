@@ -217,7 +217,7 @@ def export_onnx(
     checkpoint_path: str,
     output_path:     str = "exports/wound_seg.onnx",
     config:          Optional[Config] = None,
-    opset:           int = 17,
+    opset:           int = 18,
 ) -> None:
     """
     Export model to ONNX.
