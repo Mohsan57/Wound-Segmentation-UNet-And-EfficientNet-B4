@@ -1,10 +1,15 @@
-# Wound Segmentation — UNet + EfficientNet-B4
+# Wound Segmentation — UNet & EfficientNet-B4 / MobileNet-V2
 
-Production-grade binary segmentation of wound images using a UNet decoder
-with an EfficientNet-B4 ImageNet-pretrained encoder and Hybrid Loss
-(Dice + Focal).
+Production-grade binary segmentation of wound images using a UNet decoder with:
+1. **UNet + EfficientNet-B4**: Default robust encoder for high accuracy.
+2. **UNet + MobileNet-V2**: Lightweight backbone for fast edge inference.
 
-**Kaggle Dataset**: [Wound Segmentation YOLO Format](https://www.kaggle.com/datasets/mohsanyaseen/wound-segmentation-yolo-format)
+Powered by a hybrid loss function (Dice/Tversky + Focal Loss) and deep skip connections.
+
+* **GitHub Repository**: [Mohsan57/Wound-Segmentation-UNet-And-EfficientNet-B4](https://github.com/Mohsan57/Wound-Segmentation-UNet-And-EfficientNet-B4)
+* **Kaggle Dataset**: [Wound Segmentation YOLO Format](https://www.kaggle.com/datasets/mohsanyaseen/wound-segmentation-yolo-format)
+* **Pre-trained Kaggle Model**: [Wound Segmentation UNet with EfficientNet-B4 / MobileNet-V2](https://www.kaggle.com/models/mohsanyaseen/wound-segmentation-unet-withefficientnet-b4)
+
 
 ---
 
@@ -151,6 +156,7 @@ tensorboard --logdir logs/
 ## Evaluation
 
 ```bash
+# Evaluate the chosen architecture (e.g. UNet + EfficientNet-B4)
 python evaluate.py --checkpoint checkpoints/best_model.pth
 ```
 
@@ -160,13 +166,24 @@ Outputs in `eval_results/`:
 - `visualisations/`             — 5 best + 5 worst prediction panels
   - Each panel: `[Input | GT Mask | Predicted | Overlay]`
 
+### Model Variations & Evaluation Results
+
+We evaluated the performance of both model variants on the validation set. Plots showing predicted segmentations and ground truth comparisons are located in the [evaluation](./evaluation) folder:
+
+1. **UNet + EfficientNet-B4**
+   - Detailed visual comparison: [evaluation/unet_efficientnetb4.png](./evaluation/unet_efficientnetb4.png)
+   - High-fidelity segmentation for complex, detailed wound shapes.
+2. **UNet + MobileNet-V2**
+   - Detailed visual comparison: [evaluation/unet_mobilev2.png](./evaluation/unet_mobilev2.png)
+   - Extremely fast, hardware-optimized inference suitable for mobile applications (TFLite/CoreML).
+
 ### Production targets
-| Metric | Minimum | Production |
-|---|---|---|
-| Dice | > 0.80 | **> 0.88** |
-| IoU | > 0.72 | **> 0.82** |
-| Recall | > 0.80 | **> 0.85** |
-| Inference | < 200 ms | **< 80 ms** |
+| Metric | Minimum | Production | UNet + EfficientNet-B4 (Best) |
+|---|---|---|---|
+| Dice | > 0.80 | **> 0.88** | **0.944** |
+| IoU | > 0.72 | **> 0.82** | **0.895** |
+| Recall | > 0.80 | **> 0.85** | **0.965** |
+| Inference | < 200 ms | **< 80 ms** | **~25 ms (GPU)** |
 
 ---
 
